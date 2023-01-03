@@ -1,6 +1,9 @@
-#!/bin/python3
+#!/bin/python3 -ttu
+
+import argparse
 import math
 import re
+import sys
 import time
 from typing import List, TypedDict, cast
 import xml.dom.minidom
@@ -11,33 +14,22 @@ from tqdm import tqdm
 import urllib3
 import urllib3.request
 
-# toilet -F border -f big TiVo Dump!
-# ┌────────────────────────────────────────────────────────┐
-# │ _______ ___      __     _____                        _ │
-# │|__   __(_) \    / /    |  __ \                      | |│
-# │   | |   _ \ \  / /__   | |  | |_   _ _ __ ___  _ __ | |│
-# │   | |  | | \ \/ / _ \  | |  | | | | | '_ ` _ \| '_ \| |│
-# │   | |  | |  \  / (_) | | |__| | |_| | | | | | | |_) |_|│
-# │   |_|  |_|   \/ \___/  |_____/ \__,_|_| |_| |_| .__/(_)│
-# │                                               | |      │
-# │                                               |_|      │
-# └────────────────────────────────────────────────────────┘
-
 urllib3.disable_warnings()
 
-user = "tivo"
-password = "your tivo media access key"
-tivo_ip = "your tivo ip address"
 tivo_url = "/TiVoConnect?Command=QueryContainer&Container=%2FNowPlaying&Recurse=Yes&AnchorOffset="
-
-session = requests.session()
-session.verify = False
-session.auth = HTTPDigestAuth(user, password)
-
 
 Recording = TypedDict(
     "Recording", {"size": int, "title": str, "url": str, "eptitle": str}, total=False
 )
+
+
+def main() -> int:
+    args = parse_args()
+    print(args)
+
+    # getTivoList()
+
+    return 0
 
 
 def convert_size(size_bytes: int) -> str:
@@ -50,10 +42,14 @@ def convert_size(size_bytes: int) -> str:
     return "%s %s" % (s, size_name[i])
 
 
-def getTivoList() -> None:
+def getTivoList(*, ip_address: str, media_access_key: str) -> None:
+    session = requests.session()
+    session.verify = False
+    session.auth = HTTPDigestAuth("tivo", media_access_key)
+
     offset = 0
     recordings: List[Recording] = []
-    response = session.post("https://" + tivo_ip + tivo_url + str(offset))
+    response = session.post("https://" + ip_address + tivo_url + str(offset))
     dom = cast(xml.dom.minidom.Document, xml.dom.minidom.parseString(response.text))
     xmlData = cast(xml.dom.minidom.Element, dom.documentElement)
     totalXml = xmlData.getElementsByTagName("TotalItems")[0]
@@ -67,7 +63,7 @@ def getTivoList() -> None:
         if not total % 16:
             limit = total - 16
         while offset <= limit:
-            response = session.post("https://" + tivo_ip + tivo_url + str(offset))
+            response = session.post("https://" + ip_address + tivo_url + str(offset))
             dom = xml.dom.minidom.parseString(response.text)
             xmlData = dom.documentElement
             readXml(xmlData, recordings)
@@ -109,7 +105,12 @@ def getTivoList() -> None:
                 (recordings[i]["title"] + " - " + numstr + ".TiVo"),
             )
             print(convert_size(recordings[i]["size"]), " \t ", filename)
-        downloadFile(recordings[i]["url"], filename, recordings[i]["size"])
+        downloadFile(
+            session=session,
+            url=recordings[i]["url"],
+            filename=filename,
+            size=recordings[i]["size"],
+        )
         print("download complete.")
         i += 1
         time.sleep(10)
@@ -139,7 +140,9 @@ def readXml(xmlData: xml.dom.minidom.Element, recordings: List[Recording]) -> No
         recordings.append(recordingInfo)
 
 
-def downloadFile(url: str, filename: str, size: int) -> None:
+def downloadFile(
+    *, session: requests.Session, url: str, filename: str, size: int
+) -> None:
     x = session.get(url, stream=True)
     t = tqdm(total=size, unit="B", unit_scale=True, unit_divisor=1024)
     with open(filename, "wb") as f:
@@ -149,4 +152,18 @@ def downloadFile(url: str, filename: str, size: int) -> None:
     t.close()
 
 
-getTivoList()
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "-i", "--ip-address", help="IP address of the TiVo", required=True
+    )
+    parser.add_argument(
+        "-m", "--media-access-key", help="The TiVo's Media Access Key", required=True
+    )
+    args = parser.parse_args()
+    return args
+
+
+if "__main__" == __name__:
+    sys.exit(main())
