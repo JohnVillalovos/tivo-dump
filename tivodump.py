@@ -117,19 +117,18 @@ def readXml(xmlData, recordings):
         title = details.getElementsByTagName("Title")[0]
         content = links.getElementsByTagName("Content")[0]
         url = content.getElementsByTagName("Url")[0]
-	
-	
+
         eptitle = details.getElementsByTagName("EpisodeTitle")
-	
+
         recordingInfo = {
             "size": int(size.childNodes[0].data),
             "title": title.childNodes[0].data,
             "url": url.childNodes[0].data,
         }
-	
+
         if eptitle:
             recordingInfo["eptitle"] = eptitle[0].childNodes[0].data
-	
+
         recordings.append(recordingInfo)
 
 
