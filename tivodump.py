@@ -1,6 +1,7 @@
 #!/bin/python3 -ttu
 
 import argparse
+import dataclasses
 import math
 import re
 import sys
@@ -9,14 +10,10 @@ from typing import List, TypedDict, cast
 import xml.dom.minidom
 
 import requests
-from requests.auth import HTTPDigestAuth
-from tqdm import tqdm
+import tqdm
 import urllib3
-import urllib3.request
 
 urllib3.disable_warnings()
-
-tivo_url = "/TiVoConnect?Command=QueryContainer&Container=%2FNowPlaying&Recurse=Yes&AnchorOffset="
 
 Recording = TypedDict(
     "Recording", {"size": int, "title": str, "url": str, "eptitle": str}, total=False
@@ -27,7 +24,7 @@ def main() -> int:
     args = parse_args()
     print(args)
 
-    # getTivoList()
+    getTivoList(ip_address=args.ip_address, media_access_key=args.media_access_key)
 
     return 0
 
@@ -45,11 +42,18 @@ def convert_size(size_bytes: int) -> str:
 def getTivoList(*, ip_address: str, media_access_key: str) -> None:
     session = requests.session()
     session.verify = False
-    session.auth = HTTPDigestAuth("tivo", media_access_key)
+    session.auth = requests.auth.HTTPDigestAuth("tivo", media_access_key)
+    tivo_url = f"https://{ip_address}/TiVoConnect"
+    params = {
+        "Command": "QueryContainer",
+        "Container": "/NowPlaying",
+        "Recurse": "Yes",
+    }
 
     offset = 0
     recordings: List[Recording] = []
-    response = session.post("https://" + ip_address + tivo_url + str(offset))
+    params["AnchorOffset"] = str(offset)
+    response = session.post(tivo_url, params=params)
     dom = cast(xml.dom.minidom.Document, xml.dom.minidom.parseString(response.text))
     xmlData = cast(xml.dom.minidom.Element, dom.documentElement)
     totalXml = xmlData.getElementsByTagName("TotalItems")[0]
@@ -63,7 +67,8 @@ def getTivoList(*, ip_address: str, media_access_key: str) -> None:
         if not total % 16:
             limit = total - 16
         while offset <= limit:
-            response = session.post("https://" + ip_address + tivo_url + str(offset))
+            params["AnchorOffset"] = str(offset)
+            response = session.post(tivo_url, params=params)
             dom = xml.dom.minidom.parseString(response.text)
             xmlData = dom.documentElement
             readXml(xmlData, recordings)
@@ -144,7 +149,7 @@ def downloadFile(
     *, session: requests.Session, url: str, filename: str, size: int
 ) -> None:
     x = session.get(url, stream=True)
-    t = tqdm(total=size, unit="B", unit_scale=True, unit_divisor=1024)
+    t = tqdm.tqdm(total=size, unit="B", unit_scale=True, unit_divisor=1024)
     with open(filename, "wb") as f:
         for data in x.iter_content(32 * 1024):
             t.update(len(data))
@@ -152,7 +157,13 @@ def downloadFile(
     t.close()
 
 
-def parse_args() -> argparse.Namespace:
+@dataclasses.dataclass
+class Arguments:
+    ip_address: str
+    media_access_key: str
+
+
+def parse_args() -> Arguments:
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
@@ -162,7 +173,7 @@ def parse_args() -> argparse.Namespace:
         "-m", "--media-access-key", help="The TiVo's Media Access Key", required=True
     )
     args = parser.parse_args()
-    return args
+    return Arguments(**vars(args))
 
 
 if "__main__" == __name__:
