@@ -2,6 +2,7 @@
 import math
 import re
 import time
+from typing import List, TypedDict, cast
 import xml.dom.minidom
 
 import requests
@@ -34,7 +35,12 @@ session.verify = False
 session.auth = HTTPDigestAuth(user, password)
 
 
-def convert_size(size_bytes):
+Recording = TypedDict(
+    "Recording", {"size": int, "title": str, "url": str, "eptitle": str}, total=False
+)
+
+
+def convert_size(size_bytes: int) -> str:
     if size_bytes == 0:
         return "0B"
     size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
@@ -44,12 +50,12 @@ def convert_size(size_bytes):
     return "%s %s" % (s, size_name[i])
 
 
-def getTivoList():
+def getTivoList() -> None:
     offset = 0
-    recordings = []
+    recordings: List[Recording] = []
     response = session.post("https://" + tivo_ip + tivo_url + str(offset))
-    dom = xml.dom.minidom.parseString(response.text)
-    xmlData = dom.documentElement
+    dom = cast(xml.dom.minidom.Document, xml.dom.minidom.parseString(response.text))
+    xmlData = cast(xml.dom.minidom.Element, dom.documentElement)
     totalXml = xmlData.getElementsByTagName("TotalItems")[0]
     total = int(totalXml.childNodes[0].data)
 
@@ -109,7 +115,7 @@ def getTivoList():
         time.sleep(10)
 
 
-def readXml(xmlData, recordings):
+def readXml(xmlData: xml.dom.minidom.Element, recordings: List[Recording]) -> None:
     items = xmlData.getElementsByTagName("Item")
     for item in items:
         details = item.getElementsByTagName("Details")[0]
@@ -121,7 +127,7 @@ def readXml(xmlData, recordings):
 
         eptitle = details.getElementsByTagName("EpisodeTitle")
 
-        recordingInfo = {
+        recordingInfo: Recording = {
             "size": int(size.childNodes[0].data),
             "title": title.childNodes[0].data,
             "url": url.childNodes[0].data,
@@ -133,7 +139,7 @@ def readXml(xmlData, recordings):
         recordings.append(recordingInfo)
 
 
-def downloadFile(url, filename, size):
+def downloadFile(url: str, filename: str, size: int) -> None:
     x = session.get(url, stream=True)
     t = tqdm(total=size, unit="B", unit_scale=True, unit_divisor=1024)
     with open(filename, "wb") as f:
