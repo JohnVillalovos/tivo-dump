@@ -1,13 +1,14 @@
 #!/bin/python3
-import urllib3
-import urllib3.request
+import math
+import re
+import time
+import xml.dom.minidom
+
 import requests
 from requests.auth import HTTPDigestAuth
-import xml.dom.minidom
-import math
-import time
-import re
 from tqdm import tqdm
+import urllib3
+import urllib3.request
 
 # toilet -F border -f big TiVo Dump!
 # ┌────────────────────────────────────────────────────────┐
