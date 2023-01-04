@@ -2,44 +2,62 @@
 
 import argparse
 import dataclasses
-import math
 import re
 import sys
 import time
-from typing import List, TypedDict, cast
-import xml.dom.minidom
+from typing import Dict, List, Optional
+import xml.etree.ElementTree
 
 import requests
-import tqdm
+import tqdm  # type: ignore[import]
 import urllib3
 
-urllib3.disable_warnings()
+urllib3.disable_warnings()  # type: ignore[no-untyped-call]
 
-Recording = TypedDict(
-    "Recording", {"size": int, "title": str, "url": str, "eptitle": str}, total=False
-)
+
+TIVO_NAMESPACE = "http://www.tivo.com/developer/calypso-protocol-1.6/"
+NAMESPACES = {"": TIVO_NAMESPACE}
 
 
 def main() -> int:
     args = parse_args()
-    print(args)
 
-    getTivoList(ip_address=args.ip_address, media_access_key=args.media_access_key)
+    # So it doesn't put 'ns0:' in front of each XML element
+    xml.etree.ElementTree.register_namespace("", TIVO_NAMESPACE)
+
+    get_tivo_list(
+        ip_address=args.ip_address,
+        media_access_key=args.media_access_key,
+        download=args.download,
+    )
 
     return 0
 
 
 def convert_size(size_bytes: int) -> str:
-    if size_bytes == 0:
-        return "0B"
-    size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
-    i = int(math.floor(math.log(size_bytes, 1024)))
-    p = math.pow(1024, i)
-    s = round(size_bytes / p, 2)
-    return "%s %s" % (s, size_name[i])
+    return tqdm.tqdm.format_sizeof(size_bytes, suffix="B", divisor=1024)
 
 
-def getTivoList(*, ip_address: str, media_access_key: str) -> None:
+@dataclasses.dataclass(kw_only=True)
+class Recording:
+    size: int
+    title: str
+    url: str
+    eptitle: Optional[str] = None
+
+    def filename(self, *, index: int) -> str:
+        numstr = f"{index:04d}"
+        if self.eptitle is not None:
+            filename = f"{self.title} - {self.eptitle} - {numstr}.TiVo"
+        else:
+            filename = f"{self.title} - {numstr}.TiVo"
+        filename = re.sub(r"[^-\s\w.]", "", filename)
+        return filename
+
+
+def get_tivo_list(
+    *, ip_address: str, media_access_key: str, download: bool = False
+) -> None:
     session = requests.session()
     session.verify = False
     session.auth = requests.auth.HTTPDigestAuth("tivo", media_access_key)
@@ -54,104 +72,93 @@ def getTivoList(*, ip_address: str, media_access_key: str) -> None:
     recordings: List[Recording] = []
     params["AnchorOffset"] = str(offset)
     response = session.post(tivo_url, params=params)
-    dom = cast(xml.dom.minidom.Document, xml.dom.minidom.parseString(response.text))
-    xmlData = cast(xml.dom.minidom.Element, dom.documentElement)
-    totalXml = xmlData.getElementsByTagName("TotalItems")[0]
-    total = int(totalXml.childNodes[0].data)
+    root = xml.etree.ElementTree.fromstring(response.text)
 
-    readXml(xmlData, recordings)
+    total_recordings = int(find_return_text(element=root, match="Details/TotalItems"))
 
-    if total > 16:
+    read_xml(xml_data=root, recordings=recordings)
+
+    if total_recordings > 16:
         offset += 16
-        limit = total
-        if not total % 16:
-            limit = total - 16
+        limit = total_recordings
+        if not total_recordings % 16:
+            limit = total_recordings - 16
         while offset <= limit:
             params["AnchorOffset"] = str(offset)
             response = session.post(tivo_url, params=params)
-            dom = xml.dom.minidom.parseString(response.text)
-            xmlData = dom.documentElement
-            readXml(xmlData, recordings)
+            root = xml.etree.ElementTree.fromstring(response.text)
+            read_xml(xml_data=root, recordings=recordings)
             offset += 16
 
+    assert len(recordings) == total_recordings
+
     totalsize = 0
-    recordings.sort(key=lambda x: x["title"])
+    recordings.sort(key=lambda x: x.title)
     for item in recordings:
-        totalsize += item["size"]
-        # if 'eptitle' in item.keys():
-        # 	print(convert_size(item['size']), " \t ", item['title'], "-", re.sub(r'(?u)[^-\s\w.]', '', item['eptitle']))
-        # else:
-        # 	print(convert_size(item['size']), " \t ", item['title'])
+        totalsize += item.size
     print("Total Recordings:", len(recordings))
     print("Total Size", convert_size(totalsize))
-    i = 51
-    while i < len(recordings):
-        numstr = str(i).zfill(4)
-        print("#" + numstr)
-        filename = ""
-        if "eptitle" in recordings[i].keys():
-            filename = re.sub(
-                r"(?u)[^-\s\w.]",
-                "",
-                (
-                    recordings[i]["title"]
-                    + " - "
-                    + recordings[i]["eptitle"]
-                    + " - "
-                    + numstr
-                    + ".TiVo"
-                ),
+    for index, recording in enumerate(recordings, start=1):
+        numstr = f"{index:04d}"
+        print(f"#{numstr}")
+        filename = recording.filename(index=index)
+        print(convert_size(recording.size), " \t ", filename)
+        if download:
+            download_file(
+                session=session,
+                url=recording.url,
+                filename=filename,
+                size=recording.size,
             )
-            print(convert_size(recordings[i]["size"]), " \t ", filename)
+            print("download complete.")
+            time.sleep(10)
         else:
-            filename = re.sub(
-                r"(?u)[^-\s\w.]",
-                "",
-                (recordings[i]["title"] + " - " + numstr + ".TiVo"),
-            )
-            print(convert_size(recordings[i]["size"]), " \t ", filename)
-        downloadFile(
-            session=session,
-            url=recordings[i]["url"],
-            filename=filename,
-            size=recordings[i]["size"],
-        )
-        print("download complete.")
-        i += 1
-        time.sleep(10)
+            print(f"Not downloading {filename!r}")
+        print()
+    if not download:
+        print("Did not download files as the `--download` argument wasn't specified.")
 
 
-def readXml(xmlData: xml.dom.minidom.Element, recordings: List[Recording]) -> None:
-    items = xmlData.getElementsByTagName("Item")
+def find_return_text(
+    element: xml.etree.ElementTree.Element,
+    match: str,
+    namespaces: Optional[Dict[str, str]] = None,
+) -> str:
+    if namespaces is None:
+        namespaces = NAMESPACES
+    found_element = element.find(match, namespaces=namespaces)
+    assert found_element is not None
+    found_text = found_element.text
+    assert found_text is not None
+    return found_text
+
+
+def read_xml(
+    *, xml_data: xml.etree.ElementTree.Element, recordings: List[Recording]
+) -> None:
+    items = xml_data.findall("Item", namespaces=NAMESPACES)
     for item in items:
-        details = item.getElementsByTagName("Details")[0]
-        size = item.getElementsByTagName("SourceSize")[0]
-        links = item.getElementsByTagName("Links")[0]
-        title = details.getElementsByTagName("Title")[0]
-        content = links.getElementsByTagName("Content")[0]
-        url = content.getElementsByTagName("Url")[0]
+        size = int(find_return_text(element=item, match="Details/SourceSize"))
+        title = find_return_text(element=item, match="Details/Title")
+        url = find_return_text(element=item, match="Links/Content/Url")
 
-        eptitle = details.getElementsByTagName("EpisodeTitle")
+        eptitle_element = item.find("Details/EpisodeTitle", namespaces=NAMESPACES)
+        eptitle = None
+        if eptitle_element is not None:
+            eptitle = eptitle_element.text
 
-        recordingInfo: Recording = {
-            "size": int(size.childNodes[0].data),
-            "title": title.childNodes[0].data,
-            "url": url.childNodes[0].data,
-        }
-
-        if eptitle:
-            recordingInfo["eptitle"] = eptitle[0].childNodes[0].data
-
-        recordings.append(recordingInfo)
+        recording_info = Recording(size=size, title=title, url=url, eptitle=eptitle)
+        print("Found:", title, f" - {eptitle}" if eptitle is not None else "")
+        recordings.append(recording_info)
 
 
-def downloadFile(
+def download_file(
     *, session: requests.Session, url: str, filename: str, size: int
 ) -> None:
-    x = session.get(url, stream=True)
+    response = session.get(url, stream=True)
     t = tqdm.tqdm(total=size, unit="B", unit_scale=True, unit_divisor=1024)
     with open(filename, "wb") as f:
-        for data in x.iter_content(32 * 1024):
+        for data in response.iter_content(32 * 1024):
             t.update(len(data))
             f.write(data)
     t.close()
@@ -159,6 +166,7 @@ def downloadFile(
 
 @dataclasses.dataclass
 class Arguments:
+    download: bool
     ip_address: str
     media_access_key: str
 
@@ -171,6 +179,9 @@ def parse_args() -> Arguments:
     )
     parser.add_argument(
         "-m", "--media-access-key", help="The TiVo's Media Access Key", required=True
+    )
+    parser.add_argument(
+        "-d", "--download", help="Download the TiVo files", action="store_true"
     )
     args = parser.parse_args()
     return Arguments(**vars(args))
